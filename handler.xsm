@@ -1,0 +1,543 @@
+	opt	h+
+
+; equtes
+
+BLK_WRITE	equ	0
+BLK_READ	equ	1
+
+; zero page
+
+byte		equ $30
+sum		equ $31
+ad0		equ $32
+ad1		equ $34
+ad2		equ $43		; $cb
+erc		equ $49
+
+buf		equ $d800	; buffer location for one t2k record (3072 / $0c00 bytes)
+
+; direct system calls
+
+putc		equ $f2b0
+bell		equ $f556
+rom_get_key	equ $f2f8
+
+; copy ROM to RAM under ROM
+
+	org $0600
+
+rom2ram	ldy #$00
+	ldx #$c0
+	sty ad2
+	stx ad2+1
+	inc $d40e
+	sei
+rr0	lda (ad2),y
+	dec $d301
+	sta (ad2),y
+	inc $d301
+	iny
+	bne rr0
+	inc ad2+1
+	beq ext
+	lda ad2+1
+	cmp #$d0
+	bne rr0
+	lda #$d8
+	sta ad2+1
+	bne rr0
+ext	dec $d301
+	dec $d40e
+	cli
+	rts
+
+	ini	rom2ram
+
+	org $0600
+
+vtab	dta a(opn-1),a(cls-1),a(gtx-1),a(ptx-1)
+	dta a(nim-1),a(nim-1)
+	jmp nim
+
+opn	jsr rom_dis
+	jsr open
+	jmp rom_ena
+
+cls	jsr rom_dis
+	jsr clos
+	jmp rom_ena
+
+gtx	jsr rom_dis
+	jsr get
+	jmp rom_ena
+
+ptx	jsr rom_dis
+	jsr put
+	jmp rom_ena
+nim	rts
+
+rom_ena	pha
+	lda $d301
+	ora #1
+	bne setp
+
+rom_dis	pha
+	lda $d301
+	and #$fe
+setp	sta $d301
+	pla
+	rts
+
+key	jsr rom_ena
+	jsr rom_get_key
+	jmp rom_dis
+
+start	ldx <ini_dev
+	ldy >ini_dev
+	stx $2
+	sty $3
+	lda $9
+	ora #2
+	sta 9
+
+ini_dev	ldx	#'T'
+	ldy	<vtab	
+	lda	>vtab
+	jsr	$e486		; install new devie handler
+	bcc	*+5
+	jsr	bell
+	rts
+
+	org $cc00
+
+opd	dex
+	bne *-1
+	rts
+
+pcm	ldx tw+0,y
+	jsr opd
+	lda #$00
+	sta $d300
+	lsr $d01a
+	bit $d20e
+	bpl brk
+	ldx tw+1,y
+	jsr opd
+	lda #$40
+	sta $d300
+	sta $d01a
+	rts
+brk	ldy #$80
+	jmp on
+
+pbt	ldx #8
+	stx byte
+by0	asl @
+	pha
+	ldy #$00
+	bcc *+4
+	ldy #$02
+	jsr pcm
+	pla
+	dec byte
+	beq brt
+	ldx #$0c
+	jsr opd
+	jmp by0
+brt	rts
+
+gbt	ldx #8
+ge0	bit $d20e
+	bpl brk
+	lda #$80
+	bit $d300
+	bne ge0
+	inc $d01a
+	ldy #0
+ge1	iny
+	bmi e140
+	bit $d300
+	beq ge1
+	lsr $d01a
+	cpy tw+6
+	bcs er
+	lsr erc
+	cpy tw+7
+	rol byte
+	dex
+	bne ge0
+	rts
+er	bit erc
+	bmi ge0
+e140 ldy #$8c
+	jmp on
+
+off	sei
+	inc $d40e
+	lda $d40b
+	bne *-3
+	sta $d400
+	sta sum
+	lda #$38
+	sta $d302
+	lda #$60
+	sta $d300
+	lda #$3c
+	sta $d302
+	tsx
+	inx
+	inx
+	stx psp+1
+	rts
+
+wblk	jsr off
+	lda #0
+	sta byte
+	ldy #$08
+s0	tya
+	pha
+	ldy #4
+	jsr pcm
+	pla
+	tay
+	dec byte
+	bne s0
+	dey
+	bne s0
+
+	lda #0
+	ldy ad0
+	sta ad0
+	ldx #2
+	jsr opd
+noen	tya
+	pha
+	lda (ad0),y
+	pha
+	clc
+	adc sum
+	sta sum
+	pla
+	jsr pbt
+	pla
+	tay
+	iny
+	bne *+4
+	inc ad0+1
+	cpy ad1
+	lda ad0+1
+	sbc ad1+1
+	bcc noen
+	lda sum
+	ldx #$01
+	jsr opd
+	jsr pbt
+	ldy #$01
+	jmp on
+br0	jmp brk
+
+gblk	jsr off
+	lda #$ff
+	sta erc
+wx	ldy #0
+w0	ldx #$00
+w1	lda $d20e
+	bpl br0
+	lda #$80
+	bit $d300
+	bne w1
+	inc $d01a
+w2	inx
+	bmi w0
+	bit $d300
+	beq w2
+	lsr $d01a
+	cpx #$36
+	bcc wx
+	iny
+	bne w0
+	lda #0
+	ldy ad0
+	sta ad0
+w3	tya
+	pha
+	jsr gbt
+	pla
+	tay
+	lda byte
+	sta (ad0),y
+	clc
+	adc sum
+	sta sum
+	iny
+	bne *+4
+	inc ad0+1
+	cpy ad1
+	lda ad0+1
+	sbc ad1+1
+	bcc w3
+	jsr gbt
+	ldy #$8f
+	lda byte
+	cmp sum
+	bne on
+	ldy #$30
+	sty $d01a
+op	sta $d40a
+	dex
+	bne op
+	dey
+	bne op
+	iny
+
+on	lda $d40b
+	bne *-3
+	lda #$22
+	sta $d400
+
+psp	ldx #0
+	txs
+	lda #$38
+	sta $d302
+	lda #$00
+	sta $d300
+	lda #$3c
+	sta $d302
+	lda #$40
+	sta $d40e
+	cli
+	rts
+
+blk_rw	stx ad1
+	sty ad1+1
+	ldx <buf
+	ldy >buf
+	stx ad0
+	sty ad0+1
+	tax
+	bne *+5
+	jmp wblk
+	jmp gblk
+
+
+open	lda #$00
+	sta stat
+	lda $2a
+	and #$0c
+	cmp #4
+	beq opr
+	cmp #8
+	beq opw
+	ldy #$92
+	rts
+
+opw	ldx <buf
+	ldy >buf
+	jsr name
+	lda #BLK_WRITE
+	ldx <buf+$0c
+	ldy >buf+$0c
+	jsr blk_rw
+	jsr init
+	tya
+	bmi err
+	lda #$80
+	dta b($2c)	; bit $xxxx
+err	lda #$00
+	sta stat
+	rts
+
+opr	lsr hlp
+next	lda #BLK_READ
+	ldx <buf+$0c
+	ldy >buf+$0c
+	jsr blk_rw
+	cpy #$80
+	beq err
+	tya
+	bmi next
+	ldx <nn
+	ldy >nn
+	jsr name
+	ldx #0
+dal	lda nn,x
+	cmp #'?'
+	beq o0
+	cmp #'*'
+	beq sel
+	cmp #'@'
+	beq ok
+	cmp buf,x
+	bne next
+o0	inx
+	cpx #$0c
+	bne dal
+ok	jsr init
+	ldy #$01
+	sty stat
+	rts
+sel	ldx #2
+se0	txa
+	pha
+	lda buf,x
+	jsr putc
+	pla
+	tax
+	inx
+	cpx #$0c
+	bcc se0
+	ldx #0
+se1	txa
+	pha
+	lda tn,x
+	jsr putc
+	pla
+	tax
+	inx
+	cpx #8
+	bne se1
+	jsr key
+	and #$5f
+	ora #$40
+	cmp #'T'
+	php
+	beq *+4
+	lda #'N'
+	jsr putc
+	lda #$9b
+	jsr putc
+	plp
+	bcs ok
+	jmp next
+
+clos	lda stat
+	bpl cod
+	lda #0
+	ldy ad2
+	sta ad2
+z0	lda #0
+	sta (ad2),y
+	iny
+	bne *+4
+	inc ad2+1
+	cpy <buf+$0c02
+	lda ad2+1
+	sbc >buf+$0c02
+	bcc z0
+	lda #BLK_WRITE
+	ldx <buf+$0c02
+	ldy >buf+$0c02
+	jsr blk_rw
+cod	ldy #$01
+	rts
+
+put	ldy stat
+	bmi *+5
+	ldy #$87
+	rts
+	ldy #0
+	sta (ad2),y
+	inc ad2
+	bne *+4
+	inc ad2+1
+	inc buf
+	bne p0
+	inc buf+1
+	lda buf+1
+	cmp #$0c
+	beq cont
+p0	ldy #1
+	rts
+
+cont	lda #BLK_WRITE
+	ldx <buf+$0c02
+	ldy >buf+$0c02
+	jsr blk_rw
+	tya
+	bpl *+5
+br1	jsr err
+	jmp init
+
+get	ldy stat
+	dey
+	beq gt0
+	ldy #$83
+	rts
+gt0	lda buf
+	ora buf+1
+	bne rnb
+	lda hlp
+	bpl nb
+	ldy #$88
+	rts
+nb	lda #BLK_READ
+	ldx <buf+$0c02
+	ldy >buf+$0c02
+	jsr blk_rw
+	jsr ini1
+	tya
+	bmi br1
+	lda buf+1
+	cmp #$0c
+	beq rnb
+	sec
+	ror hlp
+	bne gt0
+rnb	ldy #0
+	lda (ad2),y
+	inc ad2
+	bne *+4
+	inc ad2+1
+	ldy buf
+	bne *+5
+	dec buf+1
+	dec buf
+	ldy #1
+	rts
+
+
+init	lda #$00
+	sta buf+0
+	sta buf+1
+ini1	lda <buf+2
+	sta ad2
+	lda >buf+2
+	sta ad2+1
+	rts
+
+name	stx ad0
+	sty ad0+1
+	ldy #1
+n0	lda nn,y
+	sta (ad0),y
+	dey
+	bpl n0
+	ldy #2
+n1	lda ($24),y
+	cmp #$9b
+	beq n2
+	cmp #'?'
+	beq n2
+	sta (ad0),y
+	iny
+	cpy #$0c
+	bcc n1
+	rts
+n2	lda #$20
+n3	sta (ad0),y
+	iny
+	cpy #$0c
+	bcc n3
+	rts
+
+tw	dta b($0d),b($21),b($35),b($49),b($91),b($99)
+	dta b($36),b($1b)
+
+tn	dta c' [T/N] ?'
+stat	brk
+hlp	brk
+nn	dta b($00),b($ff)
+
+	run start
+
+	end of handler
