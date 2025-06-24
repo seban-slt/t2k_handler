@@ -9,7 +9,7 @@ chk:	xex
 
 atr:	xex
 	cp handler.xex handler.com
-	mkatr -s 368640 handler.atr dos/ -b dos/XBW130.DOS dos/BOOT.COM dos/BLOAD.COM dos/COPY.COM dos/DUMP.COM dos/MEM.COM dos/OFFLOAD.COM handler.com
+	mkatr -s 368640 handler.atr dos/ -b dos/xbw14d.dos dos/dosdrive.com dos/pwd.com dos/copy.com dos/dump.com dos/mem.com dos/offload.com dos/ramdisk.com handler.com
 	rm -f handler.com
 
 cpy:	atr
