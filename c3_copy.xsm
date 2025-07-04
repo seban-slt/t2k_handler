@@ -1,0 +1,681 @@
+; ------------------------------------------------------------------------------
+;
+; the simple copy program code begins here
+;
+; ------------------------------------------------------------------------------
+
+ ; OS variables
+
+DSPFLG	equ	$02FE		; when set, the "E:" show control characters
+
+	org	$500
+
+usr_ln	equ	$40		; user input buffer size
+usr_in	org	*+usr_ln
+bf_siz	org	*+2		; buffer size
+bf_dlen org     *+2             ; data length in buffer
+val	org	*+2             ; stores 16-bit value to convert
+decval	org	*+3             ; decimal value after conversion
+tmp_x	org	*+1             ; temp for X reg. value
+
+	org	$b700
+
+mem_top	equ	*
+
+; independent print routine for copy program
+
+cp_prn	tsx
+	inc	$101,x
+	bne	*+5
+	inc	$102,x
+
+	lda	$102,x
+	sta	cp_pmd+2
+	ldy	$101,x
+
+cp_pmd	lda	$ff00,y
+	beq	cp_pex
+
+	jsr	cp_chr
+	jmp	cp_prn
+
+cp_pex	rts
+
+cp_eol	lda	#$9B		; EoL code
+
+	jmp	cp_chr		; ### Warning! no JMP needed when cp_chr is below
+
+cp_chr	ldy	#$0b		; CIO command (PUT record)
+	ldx	#$00		; channel #0 ---> "E:"
+	stx	$348		; rec. len = 0
+	stx	$349
+	sty	$342		; set command
+	jmp	$e456		; call the CIO, if rec. len == 0 then CIO prints char in A reg.
+
+; this subroutine read user input into line buffer
+
+cp_gtln ldx	#$00
+
+	lda	#<usr_in	; set buffer address
+	sta	$344
+	lda	#>usr_in
+	sta	$345
+
+	lda	#64		; set max input length
+	sta 	$348
+	lda	#$00
+	sta	$349
+
+	lda	#$05		; set CIO command
+	sta	$342
+	jmp	$e456
+
+
+; converts 16-bit value (X,Y regs.) in decimal format, then print out the result
+
+cp_cdc	stx	val
+	sty	val+1
+
+	lda	#0
+	sta	decval
+	sta	decval+1
+	sta	decval+2
+
+	ldy	#15
+
+	sed				; do a binary to decimal conversion
+
+cp_bd0	asl	val
+	rol	val+1
+
+	ldx	#2
+cp_bd1	lda	decval,x
+	adc	decval,x
+	sta	decval,x
+	dex
+	bpl	cp_bd1
+
+	dey
+	bpl	cp_bd0
+
+	cld
+	rts
+
+cp_dec	jsr	cp_cdc
+
+	lda	decval
+	jsr	cp_lnb
+
+	lda	decval+1
+	jsr	cp_hex
+
+	lda	decval+2
+
+;	jmp	cp_hex		; Warning! no JMP needed when cp_hex is directly below!
+
+; prints value from A reg. in HEX format
+
+cp_hex	pha
+	lsr	@
+	lsr	@
+	lsr	@
+	lsr	@
+	jsr	cp_nyb
+	pla
+cp_lnb	and	#$0f
+
+cp_nyb	cmp	#$0a
+	sed
+	adc	#'0'
+	cld
+	jmp	cp_chr
+
+; ------------------------------------------------------------------------------
+;
+; calculate buffer size
+
+cp_bfsz	sec
+	lda	#<mem_top
+	sbc	$2e7
+	sta	bf_siz
+	tax
+
+	lda	#>mem_top
+	sbc	$2e8
+	sta	bf_siz+1
+	tay
+
+	ldx	bf_siz		; print out the buffer size in decimal
+	ldy	bf_siz+1
+	jsr	cp_dec
+
+	jsr	cp_prn
+
+	dta	c" bytes",$9b,$9b,0
+
+	rts
+
+; ------------------------------------------------------------------------------
+;
+; C3 Copy Code stars here
+;
+; ------------------------------------------------------------------------------
+
+cp_main	jsr	cp_prn
+
+	dta	$9b,c" C3 Copy "*,c" v.1.1, buffer: ",0
+
+	jsr	cp_bfsz		; show the buffer size
+
+	lda     #$00		; init buffer data len to zero
+	sta     bf_dlen
+	sta	bf_dlen+1
+
+cp_loop	jsr	cp_prn
+
+	dta	c'CMD>',0
+
+	jsr	cp_gtln
+	jsr	cmd_exe
+
+	jmp	cp_loop
+
+
+cmd_exe	ldy	#$00		; replace 1st found space character to $9B
+				; we need to distinguish command and parameters
+
+cml0	lda	usr_in,y	; get char from user input buffer
+	cmp	#$20		; space found?
+	bne	cml1		; nope, advance search
+
+	lda	#$9b		; replace space do EoL
+	sta	usr_in,y
+	bne	cml2
+
+cml1	cmp	#$9b		; exit when EoL detected (command without parameters)
+	beq	cml2
+
+	iny
+	cpy	#64
+	bcc	cml0
+
+cml2	ldx	#$00
+	ldy	#$00
+
+cms0	lda	cmd_lst,x	; zero on cmd list means end of command list
+	bne	cm_srn
+
+cm_er	jsr	cp_prn
+
+	dta	c"What?",$9b,0
+
+	rts		
+
+cm_srn	cmp	#$9b		; when EoL if found all chars matches! we found the command!
+	bne	cms1
+
+	iny			; adv. user input buffer index (command can access to parameters if given)
+
+	lda	cmd_lst+2,x	; get the jump vector and put on stack!
+	pha
+	lda	cmd_lst+1,x
+	pha
+	rts
+
+cms1	cmp	usr_in,y	; compare actual cmd char with user input char
+	bne	cms2		; no match
+
+	inx
+	iny
+	cpy	#64
+	bcc	cms0
+	bcs	cm_er
+
+cms2	lda	cmd_lst,x	; advance index until EoL
+	inx
+	cmp	#$9b
+	bne	cms2
+
+	inx			; advance index to next command in check-list
+	inx
+
+	ldy	#0		; reset the user buffer index
+	beq	cms0		; and restart search
+
+; ------------------------------------------------------------------------------
+;
+; CLS command
+
+cm_cls	lda	#125
+	jsr	cp_chr
+	jmp	cp_eol
+
+; ------------------------------------------------------------------------------
+;
+; DOS command
+
+cm_dos	jmp	($000a)
+
+; ------------------------------------------------------------------------------
+;
+; BYE command
+
+cm_bye	jmp	$e477
+
+; ------------------------------------------------------------------------------
+;
+; HELP command
+
+cm_hlp	jsr	cp_prn
+
+	dta	$9b,c"Available commands: ",0
+
+	ldx	#0
+
+cm_hll	stx	tmp_x
+
+	lda	cmd_lst,X
+	beq	cm_hlx
+	cmp	#$9b
+	beq	cm_hnx
+
+	jsr	cp_chr
+
+cm_hls	ldx	tmp_x
+	inx
+	bne	cm_hll
+
+cm_hnx	lda	#','
+	jsr	cp_chr
+	lda	#' '
+	jsr	cp_chr
+
+	inc	tmp_x		; skip vector address
+	inc	tmp_x
+	bne	cm_hls
+
+cm_hlx	jsr	cp_prn
+
+	dta	126,126,32,$9b,$9b,0
+
+	rts
+
+; ------------------------------------------------------------------------------
+;
+; show memory / buffer info
+;
+cm_mem	jsr cp_prn
+
+	dta	$9b,c"Mem-Lo: $",0
+
+	lda	$2e8
+	jsr	cp_hex
+	lda	$2e7
+	jsr	cp_hex
+	jsr	cp_eol
+
+	jsr	cp_prn
+
+	dta	c"Mem-Hi: $",0
+
+	lda	#>mem_top
+	jsr	cp_hex
+	lda	#<mem_top
+	jsr	cp_hex
+	jsr	cp_eol
+
+	jsr	cp_prn
+
+	dta	c"Buffer: ",0
+
+	ldx	bf_siz
+	ldy	bf_siz+1
+	jsr	cp_dec
+
+	jsr	cp_prn
+
+	dta	c" bytes.",$9b,$9b,0
+
+	rts
+
+; ------------------------------------------------------------------------------
+;
+; BUF command
+;
+
+cm_bfr  jsr	cp_eol
+
+	ldx	bf_dlen			; print the buffer data len
+	ldy	bf_dlen+1
+	jsr	cp_dec
+
+	jsr     cp_prn
+
+	dta     c" bytes in buffer.",$9b,$9b,0
+
+	rts
+
+; ------------------------------------------------------------------------------
+;
+; DIR command
+;
+
+cm_dir	tya			; remember the cmd parameter index
+	pha
+
+	cpy	$348		; check command line length
+	bcc	cm_ddm		; if Y reg < len of user input means there are additional parameters present
+
+	ldx	#0		; when user do not give the dir filespec copy the default one!
+cm_dcp	lda	ddmask,x
+	sta	usr_in,y
+	inx
+	iny
+	cmp	#$9B
+	bne	cm_dcp
+
+
+cm_ddm	jsr	cio_cl1		; CLOSE #1
+
+	pla			; OPEN #1,6,0,"dev/filespec"
+	ldx	#6
+	ldy	#0
+	jsr	cio_op1
+
+;	lda	#$03		; OPEN #1,6,0,"D:*.*"
+;	sta	$342,x
+;
+;	pla			; lo-byte of filespec
+;	sta	$344,x
+;	lda	#>usr_in	; hi-byte of filespec
+;	sta	$345,x
+;
+;	lda	#$06		; aux1 = 6
+;	sta	$34a,x
+;	lda	#$00		; aux2 = 0
+;	sta	$34b,x
+;
+;	jsr	$e456		; open channel
+
+	bpl	*+5
+	jmp	cio_err
+
+cm_dlp	ldx	#$10		; IO channel #1 (opened device)
+	lda	#$05            ; GET record
+	jsr	cm_sdir
+	bpl	cm_dok
+	cpy	#$88
+	bne	cm_derr
+	jmp	cio_cl1
+
+cm_dok	inc	DSPFLG		; display control characters!
+
+	ldx	#$00		; IO channel #0 (screen editor "E:")
+	lda	#$09		; PUT record
+	jsr	cm_sdir
+	stx	DSPFLG		; disable displaying control characters
+	bpl	cm_dlp
+cm_derr	jmp	cio_err
+
+cm_sdir	sta	$342,x
+	lda	#<usr_in	; lo-byte of buffer address
+	sta	$344,x
+	lda 	#>usr_in	; hi-byte of buffer address
+	sta 	$345,x
+	lda	#<usr_ln	; lo-byte of buffer size
+	sta	$348,x
+	lda 	#>usr_ln	; hi-byte of buffer size
+	sta 	$349,x
+	jmp	$e456
+
+ddmask	dta	c"D:*.*",$9B	; default DIR mask
+
+
+; ------------------------------------------------------------------------------
+;
+; LOAD command
+;
+
+cm_loa	clc
+	jsr	cp_rws
+	bpl	*+5
+	jmp	cio_err
+
+	jsr	cp_prn
+
+	dta	$9b,c"Loading data...",$9b,0
+
+	clc			; load binary block
+	ldx	bf_siz
+	ldy	bf_siz+1
+	jsr	cp_brw
+	bmi	cm_crd
+
+	jsr	cp_prn
+
+	dta	c" File to long! "*,253,$9b,$9b,0
+
+	jsr	cio_cl1
+
+	lda	#0
+	sta	bf_dlen
+	sta	bf_dlen+1
+	rts
+
+cm_crd	cpy	#$88
+	beq	*+5
+	jmp	cio_err
+
+	ldx	#$10
+	lda	$348,x
+	sta	bf_dlen
+	lda	$349,x
+	sta	bf_dlen+1
+
+	jsr	cio_cl1
+
+	jsr	cp_prn
+
+	dta	c"File loaded, ",0
+
+	ldx	bf_dlen
+	ldy	bf_dlen+1
+	jsr	cp_dec
+
+	jsr	cp_prn
+
+	dta	c" bytes long.",$9b,$9b,0
+
+	rts
+
+; ------------------------------------------------------------------------------
+;
+; SAVE command
+;
+
+cm_sav	lda	bf_dlen
+	ora	bf_dlen+1
+	bne	cm_sv0
+
+	jsr	cp_prn
+
+	dta	$9b,c"buffer empty!",253,$9b,0
+
+	rts
+
+cm_sv0	sec			; open channel for write
+	jsr	cp_rws
+	bpl	*+5		; error check
+	jmp	cio_err
+
+	jsr	cp_prn		; print out message
+
+	dta	$9b,c"Saving data...",$9b,0
+
+	sec			; write binary block
+	ldx	bf_dlen
+	ldy	bf_dlen+1
+	jsr	cp_brw
+	bpl	*+5
+	jmp	cio_err
+
+	jsr	cio_cl1
+	jsr	cp_prn
+
+	dta	c"File written.",$9b,$9b,0
+
+	rts
+
+
+; ------------------------------------------------------------------------------
+;
+; LOAD/SAVE helper functions
+
+; this function setup the parameters for OPEN function
+;
+; IN:	Y - user command index
+;	C - 0: open for READ, 1: open for: WRITE
+
+cp_rws	php			; store flags
+	tya			; store Y (user cmd line index)
+	pha
+
+	jsr	cio_cl1		; close #1
+
+	pla			; restore user input parameters index
+
+	tay
+	ldx	usr_in,y	; check the device type selected by user
+
+	ldy	#0		; default AUX2 value
+	cpx	#'C'		; check for "C:" device
+	bne	*+4
+	ldy	#128		; when "C:" device selected user "short" gaps between records
+
+	plp			; restore flags
+	ldx	#4		; AUX1 == 4 (open for read)
+	bcc	*+4
+	ldx	#8		; AUX1 == 8 (open for write)
+
+	jmp	cio_op1
+
+; this function reads for write binary block from CIO device
+;
+; IN:	X: lo-byte of data length
+;	Y: hi-byte of data length
+;
+;	C - 0: READ block, 1: WRITE block
+
+cp_brw	tya			; store X,Y regs
+	pha
+	txa
+	pha
+
+	ldx	#$10
+
+	lda	#$07		; CIO binary load
+	bcc	*+4
+	lda	#$0b		; CIO binary write
+
+	sta	$342,x		; set CIO command
+
+	lda	$2e7		; buffers starts at MEMLO
+	sta	$344,x
+	lda	$2e8
+	sta	$345,x
+
+	pla			; get lo-byte of buffer length
+	sta	$348,x
+	pla
+	sta	$349,x		; get hi-byte of buffer length
+	jmp	$e456
+
+; ------------------------------------------------------------------------------
+;
+; DUMP command
+
+
+cm_dmp	rts
+
+
+
+; ------------------------------------------------------------------------------
+;
+; CIO helper functions
+;
+
+; CIO error printout
+
+cio_err	tya			; move CIO error to X reg.
+	tax
+	ldy	#$00		; clear Y reg. (hi-byte of value to convert)
+
+	jsr	cp_cdc		; convert to decimal
+	jsr	cp_prn		; print out the error message
+
+	dta	$9b,c"I/O Error #",0
+
+	lda	decval+1	; print out the error code
+	jsr	cp_nyb
+	lda	decval+2
+	jsr	cp_hex
+
+	jsr	cp_prn		; print out 2xEoL and BELL
+
+	dta	$9b,$9b,253,0
+
+	rts
+
+; CIO close channel #1
+
+cio_cl1 ldx	#$10		; CLOSE #1
+cio_clx	lda	#$0c
+	sta	$342,x
+	jmp	$e456
+
+; CIO open helper
+;
+; in:	A - lo-byte of user input buffer pointer
+;	X - CIO AUX1 byte
+;	Y - CIO AUX2 byte
+
+cio_op1	pha			; save A
+	txa
+	pha			; save X
+	tya
+	pha			; save Y
+
+	ldx	#$10		; select channel #1
+	lda	#$03
+	sta	$342,x
+
+	pla
+	sta	$34b,x		; set AUX2
+	pla
+	sta	$34a,x		; set AUX1
+
+	pla
+	sta	$344,x
+
+	lda	#>usr_in
+	sta	$345,x
+
+	jmp	$e456
+
+
+dmy_rts	rts
+
+cmd_lst	dta	c"?",$9b,a(cm_hlp-1),c"HELP",$9b,a(cm_hlp-1)
+	dta	c"DOS",$9b,a(cm_dos-1)
+	dta	c"BYE",$9b,a(cm_bye-1)
+	dta	c"BUF",$9b,a(cm_bfr-1)
+	dta	c"MEM",$9b,a(cm_mem-1)
+	dta	c"CLS",$9b,a(cm_cls-1)
+	dta	c"DIR",$9b,a(cm_dir-1)
+	dta	c"LOAD",$9b,a(cm_loa-1)
+	dta	c"SAVE",$9b,a(cm_sav-1)
+	dta	c"DUMP",$9b,a(cm_dmp-1)
+	dta	c"COPY",$9b,a(dmy_rts-1)
+	dta	0
+
+	ert	*>$bc1f			; check boundary

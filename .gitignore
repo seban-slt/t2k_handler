@@ -2,5 +2,6 @@
 *.zip
 *.atr
 _old_handlers_/*
+tools/
+mydos/
 dev_notes.txt
-

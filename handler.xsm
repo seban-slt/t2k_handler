@@ -15,7 +15,7 @@ byte		equ $30
 sum		equ $31		; check sum
 ad0		equ $32
 ad1		equ $34
-ad2		equ $00		; (originally was $cb, in Turbo Systems $43 was used, but $43 is destroyed by FMS)
+ad2		equ $00		; (originally the $CB location was used, in Turbo Systems $43 was used, but $43 is destroyed by FMS)
 erc		equ $49		; stores Error Code
 
 buf		equ $d800	; buffer location for one t2k record (3072 / $0c00 bytes)
@@ -59,45 +59,60 @@ ext	dec	 $d301
 
 	org	$0480
 
+; handler address/jump table
+
 vtab	dta	a(opn-1),a(cls-1),a(gtx-1),a(ptx-1)
 	dta	a(n_impl-1),a(n_impl-1)
 	jmp	n_impl
 n_impl	rts
 
-opn	jsr	rom_dis
-	jsr	open
-	jmp	rom_ena
+; OPEN helper
+
+opn	jsr	rom_dis		; disable OS-ROM
+	jsr	open		; call underlying OPEN subroutine
+	jmp	rom_ena		; enable OS-ROM and return
+
+; CLOSE helper
 
 cls	jsr	rom_dis
 	jsr	clos
 	jmp	rom_ena
 
+; GET helper
+
 gtx	jsr	rom_dis
 	jsr	get
 	jmp	rom_ena
 
+; PUT helper
+
 ptx	jsr	rom_dis
 	jsr	put
-	jmp	rom_ena
+;	jmp	rom_ena		; ### Warning! not needed if rom_ena is directly below
 
-rom_ena	pha
+
+rom_ena	pha			; enables the OS-ROM
 	lda	$d301
 	ora	#1
 	bne	setp
 
-rom_dis	pha
+rom_dis	pha			; disables the OS-ROM
 	lda	$d301
 	and	#$fe
 setp	sta	$d301
 	pla
 	rts
 
+; call OS get-key routine, but enable OS-ROM during waiting for key (we need readable font during user interaction)
+
 get_key	jsr	rom_ena
 	jsr	os_get_key
 	jmp	rom_dis
 
+; warm start vector
+
 ini_dev	ldx	#'T'
-	ldy	<vtab	
+	ldy	<vtab
 	lda	>vtab
 	jsr	$e486		; install new device handler
 	bcc	ini_ok		; check status, and jump if all OK!
@@ -109,32 +124,37 @@ ini_dev	ldx	#'T'
 	pha			; store Y reg.
 
 	jsr	bell		; make "error" noise
-	
+
 	pla			; restore Y
 	tay
 	pla			; restore X
 	tax
 	plp			; restore FLAGS
 
-ini_ok	rts	
+ini_ok	rts
 
 ; misc defs & variables
 
-tn	dta c' [T/',c'N'*,c'] ?'
+tn	dta	c' [T/',c'N'*,c'] ?'
 
-nn	dta b($00),b($ff)
+nn	dta	b($00),b($ff)
 fname	org	*+$0c
 
-	ert	*>$4ff
+	ert	*>$4ff		; check boundary
 
-	org 	$cc00
+; ------------------------------------------------------------------------------
+;
+; Turbo 2000 system subroutines i main handler code
+;
+
+	org 	$cc00		; most of subroutines will be placed in "international character" area ($CC00-$CFFF)
 
 dly	dex			; PWM pulse delay loop
 	bne	 *-1
 	rts
 
 ; pulse write subroutine
-; 
+;
 ; in: Y reg. --> pulse type
 
 pcm	ldx	tw+0,y		; get 1st half of pulse len from lookup table
@@ -153,12 +173,12 @@ ts_m1	sta	$d300
 
 ts_m2	lda	#$40		; end of pulse
 ts_m3	sta	$d300
-	
+
 	ora	#$08
 	sta	$d01a		; set background color
 	rts
 
-break	lda	$10		; clear BREAK key IRQ
+break	lda	$10		; clear BREAK key IRQ flag
 	and	#$7f
 	sta	$d20e
 	lda	$10
@@ -259,14 +279,14 @@ off	sei			; disable IRQ
 	lda	#%01100000	; setup PORTA I/O direction (bits #5 & #6 as outputs)
 	sta	$d300
 
-	lda	#%00110100	
+	lda	#%00110100
 	sta	$d302		; turn motor on
 ts_ma	bit	$d303		; enable CMD line (activate turbo interface in SIO mode)
 
 	tsx			; get stack pointer
 	inx
 	inx
-	stx	psp+1		; and store it in code (needed @ return)	
+	stx	psp+1		; and store it in code (needed @ return)
 	rts
 
 ; write block subroutine
@@ -290,7 +310,7 @@ s0	tya
 	bne	s0		; outer loop
 
 	lda	#0		; init source data pointer
-	ldy	ad0	
+	ldy	ad0
 	sta	ad0		; (use Y as Lo-Byte, for faster and smaller code below)
 
 	ldx	#2		; compensate delay
@@ -341,88 +361,100 @@ br0	jmp	break		; jump to BREAK key handler (to avoid out of range BMI jump below
 
 gblk	jsr	off		; prepare for read (port init, motor on, enable turbo interface)
 
-	lda	#$ff		; init sync seq detection flag
+	lda	#$ff		; init sync tone detection flag
 	sta	erc
 
-wx	ldy	 #0
-w0	ldx	 #$00
+wx	ldy	#0		; clear Y reg. (used as sync tone duration counter)
+w0	ldx	#$00		; clear X reg. (pulse len counter)
 
-w1	lda	 $d20e		; check BREAK key
-	bpl	 br0		; jump out when pressed
+w1	lda	$d20e		; check BREAK key
+	bpl	br0		; jump out when pressed
 
-ts_m7	lda	 #$80
-ts_m8	bit	 $d300
-	bne	 w1
+ts_m7	lda	#$80		; wait for falling edge
+ts_m8	bit	$d300
+	bne	w1
 
-	sta	 $d01a
+	sta	 $d01a		; set COLBAK ("0" state visualization)
 
-w2	inx
-	bmi	 w0
-ts_m9	bit	 $d300
-	beq	 w2
+w2	inx			; inc X reg. (pulse len counting)
+	bmi	 w0		; when pulse to long treat as a noise and wait for next rising edge
+
+ts_m9	bit	 $d300		; read the data_in line
+	beq	 w2		; and loop until rising edge is detected
 
 	ora	#$28
-	sta	$d01a
-	
-	cpx	#$36
-	bcc	wx
-	iny
-	bne	w0
+	sta	$d01a		; set COLBAK ("1" state visualization)
 
-	lda	#0
+	cpx	#$36		; compare pulse length with "sync" tone value
+	bcc	wx		; pulse len < sync tone len? restart the state-machine
+	iny			; increment Y reg (sync tone duration counter)
+	bne	w0		; loop until 256 proper "sync" tone pulses found
+
+; now we ready do receive data bytes
+
+	lda	#0		; prepare the buffer pointer
 	ldy	ad0
 	sta	ad0
-w3	tya
+
+w3	tya			; save Y reg.
 	pha
-	jsr	gbt
-	pla
+
+	jsr	gbt		; read byte
+
+	pla			; restore Y reg.
 	tay
+
 	lda	byte
-	sta	(ad0),y
-	clc
+	sta	(ad0),y		; store received byte in buffer
+
+	clc			; update checksum
 	adc	sum
 	sta	sum
-	iny
+
+	iny			; increment buffer pointer
 	bne	*+4
 	inc	ad0+1
-	cpy	ad1
+
+	cpy	ad1		; compare buffer pointer (ad0) with end of buffer (ad1)
 	lda	ad0+1
 	sbc	ad1+1
-	bcc	w3
-	jsr	gbt
+	bcc	w3		; repeat until all bytes are not read
 
-	ldy	 #$8f
-	lda	 byte
-	cmp	 sum
-	bne	 on
+	jsr	gbt		; get checksum byte
 
-	ldy	 #$30		; delay after reading the block
+	ldy	#$8f		; pre load the checksum error value (err #143)
+
+	lda	byte		; compare received checksum
+	cmp	sum		; with calculated checksum
+	bne	on		; not equal! exit immediately
+
+	ldy	#$30		; delay after reading the block
 				; (needed for to avoid reading garbage from tape before next block)
-	sty	 $d01a		; set COLBAK 
+	sty	$d01a		; set COLBAK
 
-op	sta	 $d40a		; delay based od WSYNC!
+op	sta	$d40a		; delay based od WSYNC!
 	dex			; X reg. is inner loop counter (*256)
-	bne	 op
+	bne	op
 	dey			; Y reg. is outer loop counter
-	bne	 op
-	
+	bne	op
+
 	iny			; set Y reg. to 1 (exit with status code #1 --> All OK!)
 
-on	lda	 $d40b
-	bne	 *-3		; wait for scan-line #0
+on	lda	$d40b
+	bne	*-3		; wait for scan-line #0
 
-	ldx	 $22f		; restore ANTIC DMA
-	stx	 $d400
+	ldx	$22f		; restore ANTIC DMA
+	stx	$d400
 
-psp	ldx	 #0
+psp	ldx	#0
 	txs
 
 	ldx	#%00111000	; motor-off + DIR reg. select
 	stx	$d302		; setup PACTL
 
 ;	lda	#0		; >>> Warning! A reg. already is set to zero!
-	sta	$d300		; restore all PORTA pins as inputs 
-	
+	sta	$d300		; restore all PORTA pins as inputs
+
 	lda	#%00111100	; motor off + DATA reg. select
 	sta	$d302
 ts_mb	bit	$d303		; and deactivate CMD line (disable turbo interface in SIO mode)
@@ -431,278 +463,388 @@ ts_mb	bit	$d303		; and deactivate CMD line (disable turbo interface in SIO mode)
 	cli			; restore IRQ
 	rts
 
-blk_rw	stx ad1
-	sty ad1+1
-	ldx <buf
-	ldy >buf
-	stx ad0
-	sty ad0+1
+; ------------------------------------------------------------------------------
+;
+; block READ/WRITE subroutine
+;
+; in:	X,Y (lo,hi) - end of buffer address
+;	A reg. - operation type: 0 --> block write, !0 --> block read
+;
+
+blk_rw	stx	ad1		; store lo-byte of end of buffer address
+	sty	ad1+1		; store hi-byte of end of buffer address
+	ldx	<buf
+	ldy	>buf
+	stx	ad0
+	sty	ad0+1
 	tax
-	bne *+5
-	jmp wblk
-	jmp gblk
+	bne	*+5
+	jmp	wblk
+	jmp	gblk
 
 
-open	lda 	#$00		; clear internal status flag
-	sta 	stat
+; ------------------------------------------------------------------------------
+;
+; device OPEN function
+;
+
+open	lda 	#$00		; set default state of device / IO channel status ($00 - not OK!)
+	sta 	hstate
 
 	jsr	ifc_sel		; select READ/WRITE interface (if specified by user)
 
 	lda	$2a		; get ZIOCB AUX1 byte into A reg.
 
 				; don't mask any bits, this will allow to throw an error when somebody try to invalid operation T: device
-;	and #$0c	
+;	and	#$0c
 
-	cmp #4			; opened for READ?
-	beq opr
-	cmp #8			; opened for WRITE?
-	beq opw
-	ldy #$92		; other operations forbidden (throw error #146)
+	cmp	#4		; open for READ?
+	beq	opr
+	cmp	#8		; open for WRITE?
+	beq	opw
+
+	ldy	#$92		; other operations forbidden (throw error #146)
 	rts
 
 ; OPEN for write
 
-opw	ldx <buf		; prepare filename
-	ldy >buf
-	jsr name
-	lda #BLK_WRITE
-	ldx <buf+$0c
-	ldy >buf+$0c
-	jsr blk_rw		; write header (filename) block
-	jsr init
-	tya
-	bmi err
-	lda #$80
-	dta b($2c)	; bit $xxxx (skips next two bytes)
-err	lda #$00
-	sta stat
-	rts
+opw	ldx	<buf		; prepare filename (stores filename in buffer)
+	ldy	>buf
+	jsr	name
 
+	lda	#BLK_WRITE	; write filename block
+	ldx	<buf+$0c
+	ldy	>buf+$0c
+	jsr	blk_rw
+
+	jsr	init		; init buffer pointers (for next block)
+
+	tya			; check status of last write operation
+	bmi	err		; jump if error
+
+	lda 	#$80		; state value $80 means --> channel opened for write & filename block written and no other data was written yet!
+	dta 	b($2c)		; bit $xxxx (skips next two bytes --> lda #$00 instruction)
+
+err	lda	#$00		; state value $00 means --> something went wrong!
+
+	sta 	hstate		; set state of channel/status of operation
+	rts
 
 ; OPEN for read
 
-opr	lsr hlp
-next	lda #BLK_READ
-	ldx <buf+$0c
-	ldy >buf+$0c
-	jsr blk_rw
-	cpy #$80
-	beq err
-	tya
-	bmi next
-	ldx <nn
-	ldy >nn
-	jsr name
-	ldx #0
-dal	lda nn,x
-	cmp #'?'	; skip to next char
-	beq o0
+opr	lsr	eof_flg+1	; clear EoF block marker
 
-	cmp #'*'	; when * detected, display prompt, ask user what to do!
-	beq sel
-	cmp #'/'	; for BW-DOS compatibility (* in BW-DOS copy routine forces reading the disk DIRECTORY)
-	beq sel
+next	lda	#BLK_READ	; try to read filename block
+	ldx	<buf+$0c
+	ldy	>buf+$0c
+	jsr	blk_rw
 
-	cmp #'@'
-	beq ok
-	cmp buf,x
-	bne next
+	cpy	#$80		; check for BREAK key
+	beq	err		; if BREAK then exit
 
-o0	inx
-	cpx #$0c	; all chars from filename checked?
-	bne dal
+	tya			; check if other error
+	bmi	next		; if error detected try to read next block! (maybe this was not filename block)
 
-ok	jsr init
-	ldy #$01
-	sty stat
+	ldx	<nn		; process the filename given by the user, and store the result in "nn" buffer
+	ldy	>nn
+	jsr	name
+
+	ldx	#0		; clear X reg. (used as compare index)
+
+; filename comparison
+
+dal	lda	nn,x
+	cmp	#'?'		; skip to next char
+	beq	o0
+
+	cmp	#'*'		; when * detected, display prompt, ask user what to do!
+	beq	sel
+	cmp	#'/'		; for BW-DOS compatibility (* in BW-DOS copy routine forces reading the disk DIRECTORY)
+	beq	sel
+
+	cmp	#'@'		; when "@" is found accept any filename without asking
+	beq	ok
+
+	cmp	buf,x		; compare chars from user given buffer and
+	bne	next
+
+o0	inx			; next character
+	cpx	#$0c		; all chars from filename checked?
+	bne	dal
+
+; filename match
+
+ok	jsr 	init		; re-init data buffer struct
+
+	ldy 	#$01		; return status #1 (all OK) in Y reg.
+	sty 	hstate		; set state (#1 -> channel successfully opened for READ)
+
 	rts
-sel	ldx #2
-se0	txa
+
+; print the found name & ask user what to do
+
+sel	ldx	#2		; skip filename block ID
+se0	txa			; store X reg.
 	pha
-	lda buf,x
-	jsr putc
-	pla
+
+	lda	buf,x		; get char of filename
+	jsr	putc		; print out to the screen
+
+	pla			; restore X reg.
 	tax
-	inx
-	cpx #$0c
-	bcc se0
-	ldx #0
-se1	txa
+
+	inx			; next char
+
+	cpx	#$0c		; all chars printed out?
+	bcc	se0		; loop until done
+
+; print out the "[T/N] ?" message
+
+	ldx	#0		; clear X reg. (loop counter)
+
+se1	txa			; store X
 	pha
-	lda tn,x
-	jsr putc
-	pla
+
+	lda	tn,x		; get message char (next)
+	jsr	putc		; put on screen
+
+	pla			; restore X
 	tax
-	inx
-	cpx #8
-	bne se1
-	jsr get_key
-	and #$5f
-	ora #$40
-	cmp #'T'
-	php
-	beq *+4
-	lda #'N'
-	jsr putc
-	lda #$9b
-	jsr putc
-	plp
-	bcs ok
-	jmp next
 
-; handler CLOSE function
+	inx			; next char
+	cpx	#8		; end of string?
+	bne	se1		; repeat until done
 
-clos	lda stat
-	bpl cod
-	lda #0
-	ldy ad2
-	sta ad2
-z0	lda #0
-	sta (ad2),y
-	iny
-	bne *+4
-	inc ad2+1
-	cpy <buf+$0c02
-	lda ad2+1
-	sbc >buf+$0c02
-	bcc z0
-	lda #BLK_WRITE
-	ldx <buf+$0c02
-	ldy >buf+$0c02
-	jsr blk_rw
-cod	ldy #$01
+	jsr	get_key		; call OS GET_KEY routine
+
+	and	#$5f		; filter the user response (uppercase, and ignore the inverse video if turned ON)
+	ora	#$40
+
+	cmp	#'T'		; check if "T" key is pressed ( TAK == YES )
+	php			; store flags
+	bcs	*+4
+	lda	#'N'		; if any other key than "T" is pressed, print out the "N" response
+	jsr	putc
+
+	lda	#$9b		; print out the EoL
+	jsr	putc
+
+	plp			; restore flags
+	bcs	ok		; user accepted the filename!
+
+	jmp	next		; user rejected the filename, search next one!
+
+; ------------------------------------------------------------------------------
+;
+; device CLOSE function
+;
+
+clos	lda	hstate		; check state
+	bpl	cod		; no data left in buffer, can exit with status #1 (all OK)
+
+; fill the remaining part of buffer with zero!
+
+	lda	#0
+	ldy	ad2		; load lo-byte of actual buffer address into Y reg.
+	sta	ad2		; clear lo-byte of pointer
+
+z0	lda	#0
+	sta	(ad2),y		; clear the buffer at actual address
+
+	iny			; inc. pointer
+	bne	*+4
+	inc	ad2+1
+
+	cpy	<buf+$0c02	; compare current address with end of buffer address
+	lda	ad2+1
+	sbc	>buf+$0c02
+	bcc	z0		; repeat until end of buffer is
+
+	lda	#BLK_WRITE	; write out the last block!
+	ldx	<buf+$0c02
+	ldy	>buf+$0c02
+	jsr	blk_rw
+
+cod	ldy	#$01		; return with status code #1 (all OK)
 	rts
 
-put	ldy stat
-	bmi *+5
-	ldy #$87
-	rts
-	ldy #0
-	sta (ad2),y
-	inc ad2
-	bne *+4
-	inc ad2+1
-	inc buf
-	bne p0
-	inc buf+1
-	lda buf+1
-	cmp #$0c
-	beq cont
-p0	ldy #1
+; ------------------------------------------------------------------------------
+;
+; device PUT byte function
+;
+
+put	ldy	hstate		; check current channel state
+	bmi	put_wr		; jump if opened for write
+
+	ldy	#$87		; throw an error #135 (channel opened for READ ONLY)
 	rts
 
-cont	lda #BLK_WRITE
-	ldx <buf+$0c02
-	ldy >buf+$0c02
-	jsr blk_rw
+put_wr	ldy	#0		; clear Y reg.
+	sta	(ad2),y		; put byte to buffer
+
+	inc	ad2		; incr. buffer pointer
+	bne	*+4
+	inc	ad2+1
+
+	inc	buf		; increment data len value in buffer
+	bne	put_p0
+	inc	buf+1
+
+	lda	buf+1		; check hi-byte of data length in buffer
+	cmp	#$0c
+	beq	cont		; jump if buffer full!
+
+put_p0	ldy	#1		; return with code #1 (all OK)
+	rts
+
+cont	lda	#BLK_WRITE	; write out the buffer
+	ldx	<buf+$0c02
+	ldy	>buf+$0c02
+	jsr	blk_rw
 	tya
-	bpl *+5
-br1	jsr err
-	jmp init
+	bpl	*+5		; jump if no error
+br1	jsr	err		; handle the error
 
-get	ldy stat
-	dey
-	beq gt0
-	ldy #$83
+	jmp	init		; re-init buffer struct.
+
+; ------------------------------------------------------------------------------
+;
+; device GET byte function
+;
+
+get	ldy	hstate		; check state of channel
+	dey			; (correct value is 1)
+	beq	gt0		; jump if opened for READ
+
+	ldy	#$83		; throw error #131 (channel opened for WRITE ONLY)
 	rts
-gt0	lda buf
-	ora buf+1
-	bne rnb
-	lda hlp
-	bpl nb
-	ldy #$88
+
+gt0	lda	buf		; check if any data left in buffer
+	ora	buf+1
+	bne	rnb		; yes! get next byte from buffer!
+
+eof_flg	lda	#0		; check for EoF block
+	bpl	nb		; not EoF block? jump and read next block of data!
+
+	ldy	#$88		; report End of File!
 	rts
-nb	lda #BLK_READ
-	ldx <buf+$0c02
-	ldy >buf+$0c02
-	jsr blk_rw
-	jsr ini1
-	tya
-	bmi br1
-	lda buf+1
-	cmp #$0c
-	beq rnb
+
+nb	lda	#BLK_READ	; read next block of data!
+	ldx	<buf+$0c02
+	ldy	>buf+$0c02
+	jsr	blk_rw
+
+	jsr	ini1		; re-init buffer address pointer
+
+	tya			; check status code (sored in Y reg.)
+	bmi	br1		; jump when error detected during read
+
+	lda	buf+1		; check the size of the data in the read block
+	cmp	#$0c		; (compare hi-byte only)
+	beq	rnb		; when data len = $0c00 that is full record (not EoF one)
+
 	sec
-	ror hlp
-	bne gt0
-rnb	ldy #0
-	lda (ad2),y
-	inc ad2
-	bne *+4
-	inc ad2+1
-	ldy buf
-	bne *+5
-	dec buf+1
-	dec buf
-	ldy #1
+	ror	eof_flg+1	; the current data record is shorter then $0c00 bytes, so set the EoF flag
+	bne 	gt0		; and jump to get byte subroutine
+
+rnb	ldy	#0		; get next byte from buffer
+	lda	(ad2),y
+
+	inc	ad2		; increment buffer pointer
+	bne	*+4
+	inc	ad2+1
+
+	ldy	buf		; decrement remaining data left counter
+	bne	*+5
+	dec	buf+1
+	dec	buf
+
+	ldy 	#1		; return with status code #1 (all OK)
 	rts
 
-; init buffer struct
+; inits buffer struct
 
-init	lda #$00
-	sta buf+0
-	sta buf+1
-ini1	lda <buf+2
-	sta ad2
-	lda >buf+2
-	sta ad2+1
+init	lda	#$00		; clears the data length in buffer
+	sta	buf+0
+	sta	buf+1
+
+ini1	lda	<buf+2		; init the buffer pointer to the beginning of the buffer
+	sta	ad2
+	lda	>buf+2
+	sta	ad2+1
 	rts
 
-name	stx ad0
-	sty ad0+1
-	jsr prcs_fn
-	ldy #1
-n0	lda nn,y
-	sta (ad0),y
+; prepare filename block in specified buffer
+
+name	stx 	ad0		; store the lo-byte of dest. pointer
+	sty 	ad0+1		; store the hi-byte of dest. pointer
+
+	jsr 	prcs_fn		; process filename
+
+	ldy	#1		; copy the filename BLOCK_ID into buffer
+n0	lda	nn,y
+	sta	(ad0),y
 	dey
-	bpl n0
-	ldx #0
-	ldy #2
-n1	lda fname,x
-	cmp #$9b
-	beq n2
-	cmp #'?'
-	beq n2
-	sta (ad0),y
-	inx
+	bpl	n0
+
+	ldx	#0		; X reg. is used as user filename index
+	ldy	#2		; Y reg. is used as internal buffer index
+
+n1	lda	fname,x		; get the char from internal filename buffer
+	cmp	#$9b		; check for EoL
+	beq	n2		; if EoL then jump out of the loop (fill up the remaining chars with spaces)
+	cmp	#'?'		; check for "?"
+	beq	n2		; if detected jump out of the loop also!
+	sta	(ad0),y
+
+	inx			; advance index registers
 	iny
-	cpy #$0c
-	bcc n1
+
+	cpy #$0c		; all chars processed? (2 bytes of block ID, 10 bytes of filename)
+	bcc n1			; repeat until done!
 	rts
-n2	lda #$20
+
+n2	lda #$20		; fill the rest of filename buffer with "space" characters
 n3	sta (ad0),y
 	iny
 	cpy #$0c
 	bcc n3
 	rts
 
-; process given filename (with skipping colons)
+; ------------------------------------------------------------------------------
+;
+; processes given filename (with skipping colons)
 ;
 ; e.g. " T:FOO.BAR" --> "FOO.BAR"
 ;      "T1:FOO.BAR" --> "FOO.BAR"
 ;
 
-prcs_fn	ldx	#0
-	ldy	#1
+prcs_fn	ldx	#0		; X reg. as internal index register
+	ldy	#1		; Y reg. as external index register
 
-	lda	#':'	
-c_src	cmp	($24),y
-	beq	c_fnd
-	iny
-	cpy	#3
-	bcc	c_src	
-	ldy	#1
-c_fnd	iny
+	lda	#':'		; we will search for colons!
+c_src	cmp	($24),y		; compare with filename given by the OPEN function
+	beq	c_fnd		; found!
+	iny			; advance index
+	cpy	#3		; check boundary (colon must be at 1 or 2 position)
+	bcc	c_src
+	ldy	#1		; no colon found assume user error (e.g. trying to open "T***")
+				; so set index at pos. 1 (after a device name)
 
-c_cpy	lda	($24),y
-	sta	fname,x
-	cmp	#$9b
-	beq	c_skp
-	iny
+c_fnd	iny			; skip the colon (when found, and one char if not found)
+
+c_cpy	lda	($24),y		; copy given filename from open function
+	sta	fname,x		; to internal buffer
+	cmp	#$9b		; check for EoL
+	beq	c_skp		; skip copying when EoL found (fill up with spaces)
+
+	iny			; incr. indexes
 	inx
-	cpx	#12
+
+	cpx	#12		; all chars copied?
 	bcc	c_cpy
-c_skp	lda	#$20
+
+c_skp	lda	#$20		; fill-up the rest with spaces!
 	sta	fname,x
 	inx
 	cpx	#12
@@ -730,7 +872,7 @@ ifc_sel	ldy	#0
 	cmp	#'1'
 	bcc	ifc_skp
 	sbc	#'1'
-	eor	mode
+mode	eor	#0
 
 ;	jmp	set_ifc		; >>> Warning! JMP not needed when set_ifc is directly below...
 
@@ -775,12 +917,12 @@ set_ifc	and	#$01
 	sta	ts_mb
 	rts
 
-itb0	dta	$00,$a3			; reg. write value for logic 0)
-itb1	dta	$40,$23			; reg. write value for logic 1)
+itb0	dta	$00,$a3			; reg. write value for logic 0
+itb1	dta	$40,$23			; reg. write value for logic 1
 itb2	dta	$80,$10			; mask for bit read
 itb3	dta	l($d300),l($d20f)	; lo-byte of write reg.
 itb4	dta	h($d300),h($d20f)	; lo-byte of write reg.
-itb5	dta	$2c,$8d			; CMD line mod/skip
+itb5	dta	$2c,$8d			; SIO CMD line mod/skip
 
 ; LUT for pulses lengths
 
@@ -789,9 +931,7 @@ tw	dta	b($0d),b($21),b($35),b($49),b($91),b($99)
 
 ; misc variables
 
-mode	brk				; selected interface (KSO/PORTA or F/SIO)
-stat	brk
-hlp	brk
+hstate	brk				; state of the T: device
 
 	ert	*>$d000
 
@@ -800,15 +940,56 @@ hlp	brk
 	org	$3000
 
 start	jsr	print		; print out the info message
-	
+
 	dta	$9b,c' Turbo 2000 (KSO/F) handler, v1.1 '*,$9b
 	dta	c'done by Seban/Slt!, (p) 2025.06.18',$9b,$9b,0
 
 	lda	$700		; check if BW-DOS or Sparta DOS is present
 	cmp	#'S'
-	beq	bw_sp		; yes!
+	jeq	bw_sp		; yes!
 
-	jmp	set_kso		; no BW/Sparta? Use defaults.
+; when no BW or Sparta DOS detected ask user what turbo interface use
+
+	jsr	print
+
+	dta	c'Please choose turbo interface:',$9b,$9b
+	dta	c' K '*,c' KSO 2000 (PORTA input)',$9b
+	dta	c' F '*,c' Turbo 2000F (SIO input)',$9b,$9b
+	dta	c'Your choice ?',0
+
+	jsr	os_get_key	; get user input
+	and	#$5f		; filter the user response (uppercase, and ignore the inverse video if turned ON)
+	ora	#$40
+
+	pha
+	jsr	putc
+	lda	#$9b
+	jsr	putc
+	jsr	putc
+	pla
+
+	jsr	chk_nx1
+
+;	lda	$700		; check if MYDOS is present
+;	cmp	#'M'
+;	beq	*+3
+;	rts
+
+	jsr	print
+
+	dta	$9b,c'Press ',c' C '*,c' to run copy program,',$9b
+	dta	c'or other key, to return to DOS',$9b,0
+
+	jsr	os_get_key
+
+	cmp	#'C'		; start copy program?
+	bne	*+5
+	jmp	cp_main
+
+	rts
+
+
+;	jmp	set_kso		; no BW/Sparta? Use defaults.
 
 ; process command line
 
@@ -826,7 +1007,7 @@ jpx	jsr	$f00d		; crunch cmd line parameter
 	lda	($0a),y
 	cmp	#$9b
 	beq	set_kso
-	
+
 	cmp	#'/'
 	bne	chk_unk
 
@@ -860,7 +1041,7 @@ set_kso	jsr	print
 
 	lda	#0
 
-chk_set	sta	mode		; remember selected interface type
+chk_set	sta	mode+1		; remember selected interface type
 	jsr	rom_dis
 	jsr	set_ifc		; set selected interface type
 
@@ -875,7 +1056,7 @@ hnd_ins	ldx	<ini_dev	; setup the warm start CASINI reset vector
 	ldy	>ini_dev
 	stx	$02
 	sty	$03
-	
+
 	lda	$09
 	ora	#2
 	sta	$09
@@ -893,7 +1074,7 @@ hnd_ex	dex			; (correct X reg. because subroutine @ $e486 increments X before ex
 	jsr	hnd_cmp		; check for other "T:" handler
 	bcc	hnd_own
 	jmp	hnd_not
-	
+
 hnd_own	jsr	print
 	dta	c'Device already installed.',$9b,0
 
@@ -913,7 +1094,7 @@ prn_m	lda	$ff00,y
 	beq	prn_ex
 
 	jsr	put_chr
-	bpl	print
+	jmp	print
 
 prn_ex	rts
 
@@ -948,11 +1129,11 @@ hnd_sr	cmp	HATABS,x
 ;      C = 1 when handler address not equal own handler address
 
 hnd_cmp	sec			; assume the address mismatch
-	
+
 	lda	<vtab		; compare lo-byte
 	eor	HATABS+1,x
 	bne	hnd_aln		; not equal, exit!
-	
+
 	lda	>vtab		; compare hi-byte
 	eor	HATABS+2,x
 	bne	hnd_aln		; not equal, exit!
@@ -983,5 +1164,8 @@ hnd_yes	lda	#0		; remove HTABS entry
 	rts
 
 	run 	start
+
+	icl	"c3_copy.xsm"
+
 
 	end of handler
