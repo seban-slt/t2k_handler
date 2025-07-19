@@ -2,29 +2,29 @@
 
 ; equates
 
-BLK_WRITE	equ	0
-BLK_READ	equ	1
+BLK_WRITE	equ	0	; block write
+BLK_READ	equ	1	; block read
 
 ; OS
 
-HATABS		equ	$31a
+HATABS		equ	$31a	; OS Handler Tables
 
 ; zero page
 
-byte		equ $30
+byte		equ $30		; received/decoded byte
 sum		equ $31		; check sum
-ad0		equ $32
-ad1		equ $34
-ad2		equ $00		; (originally the $CB location was used, in Turbo Systems $43 was used, but $43 is destroyed by FMS)
+ad0		equ $32		; pointer
+ad1		equ $34		; pointer
+ad2		equ $00		; (originally the $CB location was used, in Turbo Systems $43 was used, but $43 is destroyed by DOS/FMS)
 erc		equ $49		; stores Error Code
 
 buf		equ $d800	; buffer location for one t2k record (3072 / $0c00 bytes)
 
 ; direct system calls
 
-putc		equ $f2b0
-bell		equ $f556
-os_get_key	equ $f2f8
+putc		equ $f2b0	; put char on current cursor position
+bell		equ $f556	; system BELL
+os_get_key	equ $f2f8	; waits for KEY (keycode returned in A reg.)
 
 ; copy ROM to RAM under ROM
 
@@ -135,7 +135,7 @@ ini_ok	rts
 
 ; misc defs & variables
 
-tn	dta	c' [T/',c'N'*,c'] ?'
+tn	dta	c' [Y/',c'N'*,c'] ?'
 
 nn	dta	b($00),b($ff)
 fname	org	*+$0c
@@ -939,7 +939,33 @@ hstate	brk				; state of the T: device
 
 	org	$3000
 
-start	jsr	print		; print out the info message
+qmegs	dta	c"QMEG-OS"		; QMEG-ID string
+
+start	ldx	#$06
+	
+qm_ck	lda	$c001,x		; check for QMEG string
+	cmp	qmegs,x
+	bne	no_qmeg		; exit from loop, when no match found
+	
+	dex			; check next bytes
+	bpl	qm_ck
+
+	inc	$2F0		; disable cursor
+
+	jsr	print
+
+	dta	125,$9b,c" Please disable QMEG-OS "*,$9b,$9b
+	dta	c"this handler can't work with QMEG.",$9b,0
+
+qm_kk	lda	$d20f		; wait for key 
+	and	#$0c
+	cmp	#$0c
+	beq	qm_kk
+
+	jmp	$e477		; force COLD start
+
+
+no_qmeg	jsr	print		; print out the info message
 
 	dta	$9b,c' Turbo 2000 (KSO/F) handler, v1.1 '*,$9b
 	dta	c'done by Seban/Slt!, (p) 2025.06.18',$9b,$9b,0
@@ -957,23 +983,33 @@ start	jsr	print		; print out the info message
 	dta	c' F '*,c' Turbo 2000F (SIO input)',$9b,$9b
 	dta	c'Your choice ?',0
 
-	jsr	os_get_key	; get user input
+iff_rep	jsr	os_get_key	; get user input
 	and	#$5f		; filter the user response (uppercase, and ignore the inverse video if turned ON)
 	ora	#$40
 
-	pha
-	jsr	putc
-	lda	#$9b
-	jsr	putc
-	jsr	putc
-	pla
+	cmp	#'K'
+	beq	iff_sel
+	cmp	#'F'
+	beq	iff_sel
 
-	jsr	chk_nx1
+	lda	#253
+	jsr	putc
+	jmp	iff_rep
 
-;	lda	$700		; check if MYDOS is present
-;	cmp	#'M'
-;	beq	*+3
-;	rts
+iff_sel	pha			; remeber selected key
+	jsr	putc		; display pressed key
+	lda	#$9b		; 2x EoL
+	jsr	putc
+	jsr	putc
+	
+	pla			; restore user choice
+	jsr	chk_nx1		; call interface configuration
+
+	lda	#<$700		; if MEMLO < $0700 run C3 copy without question
+	cmp	$2e7
+	lda	#>$0700
+	sbc	$2e8
+	bcs	c3_run
 
 	jsr	print
 
@@ -984,10 +1020,9 @@ start	jsr	print		; print out the info message
 
 	cmp	#'C'		; start copy program?
 	bne	*+5
-	jmp	cp_main
+c3_run	jmp	cp_main
 
 	rts
-
 
 ;	jmp	set_kso		; no BW/Sparta? Use defaults.
 

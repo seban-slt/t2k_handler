@@ -2,6 +2,7 @@
 *.zip
 *.atr
 _old_handlers_/*
+.vscode/
 tools/
 mydos/
 dev_notes.txt
