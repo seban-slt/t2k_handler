@@ -1,0 +1,2 @@
+*.xsm linguist-language=Assembly
+makefile linguist-language=Makefile
